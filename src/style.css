@@ -2,8 +2,6 @@
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color: #0f172a;
-  background-color: #0f172a;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -21,7 +19,7 @@ body {
 body {
   min-width: 320px;
   min-height: 100vh;
-  background-color: #0f172a;
+  background-color: #f8fafc;
 }
 
 #app {
@@ -31,4 +29,47 @@ body {
 
 button {
   font-family: inherit;
+}
+
+/* Focus rings — visible for keyboard navigation */
+:focus-visible {
+  outline: 3px solid #CC0000;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+[data-theme="highContrast"] :focus-visible {
+  outline: 3px solid #000000;
+}
+
+[data-theme="dark"] :focus-visible {
+  outline: 3px solid #ff5555;
+}
+
+[data-theme="deuteranopia"] :focus-visible {
+  outline: 3px solid #0077cc;
+}
+
+/* Scrollbar theming for dark mode */
+[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+/* Skip to main content link */
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 8px;
+  z-index: 9999;
+  background: #CC0000;
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-weight: 700;
+  font-size: 14px;
+  text-decoration: none;
+}
+
+.skip-link:focus {
+  top: 8px;
 }
