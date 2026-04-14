@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Flag, BarChart2, Search, DollarSign, MapPin, Loader, AlertTriangle } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext.jsx';
-import { fetchLocations, fetchDailyOccupancy, daysAgo, today } from '../api/occuspace.js';
+import { fetchLocations, fetchDailyOccupancy, daysAgo, today, cleanName } from '../api/occuspace.js';
 import './Underutilized.css';
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -58,8 +58,8 @@ export default function Underutilized() {
         setError(null);
 
         const allLocations = await fetchLocations();
-        const root = allLocations.find(l => l.parentID == null) || allLocations[0];
-        const children = allLocations.filter(l => l.parentID === root?.id);
+        const root = allLocations.find(l => l.parentId == null) || allLocations[0];
+        const children = allLocations.filter(l => l.parentId === root?.id);
         const locationsToQuery = children.length > 0 ? children : allLocations;
 
         const start = daysAgo(WEEKS_TO_ANALYZE * 7);
@@ -76,8 +76,14 @@ export default function Underutilized() {
           if (result.status !== 'fulfilled' || !result.value?.length) return null;
 
           const days = result.value;
-          const avgOcc = Math.round(days.reduce((s, d) => s + d.avgOccupancy, 0) / days.length);
-          const pct = loc.capacity > 0 ? Math.round((avgOcc / loc.capacity) * 100) : 0;
+          // Use avgPercentageOccupied from API if available, otherwise compute from count
+          // avgPercentageOccupied is a decimal fraction (0.13 = 13%), so multiply by 100
+          const hasApiPct = days[0]?.avgPercentageOccupied != null;
+          const pct = hasApiPct
+            ? Math.round(days.reduce((s, d) => s + (d.avgPercentageOccupied || 0), 0) / days.length * 100)
+            : loc.capacity > 0
+              ? Math.round(days.reduce((s, d) => s + (d.avgOccupancy || 0), 0) / days.length / loc.capacity * 100)
+              : 0;
 
           if (pct >= UTILIZATION_THRESHOLD) return null; // not underutilized
 
@@ -107,7 +113,7 @@ export default function Underutilized() {
           const wasted = 100 - pct;
 
           return {
-            name: loc.name,
+            name: cleanName(loc.name),
             capacity: loc.capacity,
             pct,
             avgOcc: pct,

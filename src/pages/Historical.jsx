@@ -51,7 +51,7 @@ export default function Historical() {
     async function init() {
       try {
         const allLocations = await fetchLocations();
-        const root = allLocations.find(l => l.parentID == null) || allLocations[0];
+        const root = allLocations.find(l => l.parentId == null) || allLocations[0];
         setRootId(root?.id);
       } catch (err) {
         setError(err.message);

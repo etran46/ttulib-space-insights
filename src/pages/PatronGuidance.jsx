@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { MapPin, Navigation, Loader, AlertTriangle } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext.jsx';
-import { fetchLocations, fetchLocationNow } from '../api/occuspace.js';
+import { fetchLocations, fetchLocationNow, cleanName } from '../api/occuspace.js';
 import './PatronGuidance.css';
 
 function getStatusInfo(pctAvailable) {
@@ -29,8 +29,8 @@ export default function PatronGuidance() {
         setError(null);
 
         const allLocations = await fetchLocations();
-        const root = allLocations.find(l => l.parentID == null) || allLocations[0];
-        const children = allLocations.filter(l => l.parentID === root?.id);
+        const root = allLocations.find(l => l.parentId == null) || allLocations[0];
+        const children = allLocations.filter(l => l.parentId === root?.id);
         const locationsToQuery = children.length > 0 ? children : allLocations;
 
         const nowPromises = locationsToQuery.map(loc => fetchLocationNow(loc.id));
@@ -45,7 +45,7 @@ export default function PatronGuidance() {
             const pctAvailable = loc.capacity > 0 ? Math.round((spots / loc.capacity) * 100) : 0;
             const statusInfo = getStatusInfo(pctAvailable);
             return {
-              name: loc.name,
+              name: cleanName(loc.name),
               spots: Math.max(0, spots),
               capacity: loc.capacity,
               pctAvailable,

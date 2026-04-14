@@ -6,7 +6,7 @@ import {
 import { Download, Loader, AlertTriangle } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext.jsx';
 import ChartTooltip from '../components/ChartTooltip.jsx';
-import { fetchLocations, fetchDailyOccupancy, fetchHourlyOccupancy, daysAgo, today } from '../api/occuspace.js';
+import { fetchLocations, fetchDailyOccupancy, daysAgo, today, cleanName } from '../api/occuspace.js';
 import './CompareSpaces.css';
 
 // ── Sub-components ──────────────────────────────────────────────────────────
@@ -60,13 +60,15 @@ const TIME_FRAMES = {
   'Semester':      150,
 };
 
+const DEFAULT_CHART_COLORS = ['#CC0000', '#f59e0b', '#22c55e', '#3b82f6', '#8b5cf6', '#ec4899'];
+
 // ── Main component ──────────────────────────────────────────────────────────
 
 export default function CompareSpaces() {
   const { colors } = useTheme();
   const [animIn, setAnimIn] = useState(false);
   const [allLocations, setAllLocations] = useState([]);
-  const [locationData, setLocationData] = useState({}); // { locId: { daily: [], hourly: [] } }
+  const [locationData, setLocationData] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -79,7 +81,7 @@ export default function CompareSpaces() {
 
   useEffect(() => { setTimeout(() => setAnimIn(true), 80); }, []);
 
-  // Load locations and their data
+  // Load locations and their daily occupancy data
   useEffect(() => {
     let cancelled = false;
 
@@ -89,31 +91,27 @@ export default function CompareSpaces() {
         setError(null);
 
         const locs = await fetchLocations();
-        const root = locs.find(l => l.parentID == null) || locs[0];
-        const children = locs.filter(l => l.parentID === root?.id);
+        const root = locs.find(l => l.parentId == null) || locs[0];
+        const children = locs.filter(l => l.parentId === root?.id);
         const spaces = children.length > 0 ? children : locs;
 
-        // Fetch daily occupancy for semester range for each space
         const start = daysAgo(150);
         const end = today();
 
         const results = {};
         const promises = spaces.map(async (loc) => {
           try {
-            const [daily, hourly] = await Promise.all([
-              fetchDailyOccupancy(loc.id, start, end),
-              fetchHourlyOccupancy(loc.id, start, end),
-            ]);
-            results[loc.id] = { daily: daily || [], hourly: hourly || [] };
+            const daily = await fetchDailyOccupancy(loc.id, start, end);
+            results[loc.id] = { daily: daily || [] };
           } catch {
-            results[loc.id] = { daily: [], hourly: [] };
+            results[loc.id] = { daily: [] };
           }
         });
 
         await Promise.all(promises);
 
         if (!cancelled) {
-          setAllLocations(spaces);
+          setAllLocations(spaces.map(l => ({ ...l, displayName: cleanName(l.name) })));
           setLocationData(results);
           setLoading(false);
         }
@@ -131,32 +129,33 @@ export default function CompareSpaces() {
 
   // Location filter options
   const locationOptions = useMemo(() =>
-    ['All Locations', ...allLocations.map(l => l.name)],
+    ['All Locations', ...allLocations.map(l => l.displayName)],
     [allLocations]
   );
 
   // Filter locations
   const visibleLocations = useMemo(() => {
     if (filters.location === 'All Locations') return allLocations;
-    return allLocations.filter(l => l.name === filters.location);
+    return allLocations.filter(l => l.displayName === filters.location);
   }, [allLocations, filters.location]);
 
   // Time range
   const daysBack = TIME_FRAMES[filters.timeFrame] || 150;
-  const cutoffDate = daysAgo(daysBack);
+  const cutoffDate = useMemo(() => daysAgo(daysBack), [daysBack]);
 
-  // Monthly chart data — aggregate daily data by month for visible locations
+  // Monthly chart data
   const monthlyData = useMemo(() => {
+    if (visibleLocations.length === 0) return [];
     const months = {};
     visibleLocations.forEach(loc => {
       const data = locationData[loc.id]?.daily || [];
       data.forEach(d => {
         const date = d.normalizedDate || d.timestamp?.slice(0, 10);
-        if (date < cutoffDate) return;
+        if (!date || date < cutoffDate) return;
         const monthKey = new Date(date).toLocaleDateString('en-US', { month: 'short' });
         if (!months[monthKey]) months[monthKey] = {};
-        if (!months[monthKey][loc.name]) months[monthKey][loc.name] = [];
-        months[monthKey][loc.name].push(d.avgOccupancy);
+        if (!months[monthKey][loc.displayName]) months[monthKey][loc.displayName] = [];
+        months[monthKey][loc.displayName].push(d.avgOccupancy || 0);
       });
     });
 
@@ -166,13 +165,13 @@ export default function CompareSpaces() {
       .map(m => {
         const row = { m };
         Object.entries(months[m]).forEach(([name, vals]) => {
-          row[name] = Math.round(vals.reduce((s, v) => s + v, 0) / vals.length);
+          row[name] = vals.length > 0 ? Math.round(vals.reduce((s, v) => s + v, 0) / vals.length) : 0;
         });
         return row;
       });
   }, [visibleLocations, locationData, cutoffDate]);
 
-  // Weekly bar data — aggregate by day of week
+  // Weekly bar data
   const weeklyBar = useMemo(() => {
     const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     const byDow = dayNames.map(() => ({ total: 0, count: 0 }));
@@ -181,9 +180,9 @@ export default function CompareSpaces() {
       const data = locationData[loc.id]?.daily || [];
       data.forEach(d => {
         const date = d.normalizedDate || d.timestamp?.slice(0, 10);
-        if (date < cutoffDate) return;
-        const dow = (new Date(date).getDay() + 6) % 7; // Mon=0
-        byDow[dow].total += d.avgOccupancy;
+        if (!date || date < cutoffDate) return;
+        const dow = (new Date(date).getDay() + 6) % 7;
+        byDow[dow].total += d.avgOccupancy || 0;
         byDow[dow].count++;
       });
     });
@@ -200,52 +199,34 @@ export default function CompareSpaces() {
       const data = locationData[loc.id]?.daily || [];
       const filtered = data.filter(d => {
         const date = d.normalizedDate || d.timestamp?.slice(0, 10);
-        return date >= cutoffDate;
+        return date && date >= cutoffDate;
       });
       if (filtered.length === 0) return null;
 
-      const avgOcc = Math.round(filtered.reduce((s, d) => s + d.avgOccupancy, 0) / filtered.length);
-      const peakOcc = Math.max(...filtered.map(d => d.peakOccupancy));
+      const avgOcc = Math.round(filtered.reduce((s, d) => s + (d.avgOccupancy || 0), 0) / filtered.length);
+      const peakVals = filtered.map(d => d.peakOccupancy || 0);
+      const peakOcc = peakVals.length > 0 ? Math.max(...peakVals) : 0;
       const util = loc.capacity > 0 ? Math.round((avgOcc / loc.capacity) * 100) : 0;
 
-      // Find peak hour from hourly data
-      const hourly = locationData[loc.id]?.hourly || [];
-      const hourAvgs = {};
-      hourly.forEach(h => {
-        const time = h.normalizedTime?.slice(0, 2) || '00';
-        if (!hourAvgs[time]) hourAvgs[time] = { total: 0, count: 0 };
-        hourAvgs[time].total += h.avgOccupancy;
-        hourAvgs[time].count++;
-      });
-      let peakHour = '—';
-      let maxHourAvg = 0;
-      Object.entries(hourAvgs).forEach(([hour, { total, count }]) => {
-        const avg = total / count;
-        if (avg > maxHourAvg) {
-          maxHourAvg = avg;
-          const h = parseInt(hour);
-          const nextH = h + 1;
-          peakHour = `${h > 12 ? h - 12 : h || 12}${h >= 12 ? 'PM' : 'AM'}–${nextH > 12 ? nextH - 12 : nextH || 12}${nextH >= 12 ? 'PM' : 'AM'}`;
-        }
-      });
-
       return {
-        name: loc.name,
+        name: loc.displayName,
         avgOcc,
         cap: loc.capacity,
-        util,
-        peak: peakHour,
+        util: Math.min(util, 100),
         peakOcc,
       };
     }).filter(Boolean);
   }, [visibleLocations, locationData, cutoffDate]);
 
   // Chart colors
-  const chartColors = colors.chartColors || ['#3b82f6', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#ec4899'];
-  const locNames = visibleLocations.map(l => l.name);
+  const chartColors = colors.chartColors || DEFAULT_CHART_COLORS;
+  const locNames = visibleLocations.map(l => l.displayName);
 
   // Bottom stats
-  const topPerf = spacePerf.reduce((best, r) => r.util > (best?.util ?? 0) ? r : best, null);
+  const topPerf = spacePerf.length > 0
+    ? spacePerf.reduce((best, r) => r.util > best.util ? r : best, spacePerf[0])
+    : null;
+
   const bottomStats = [
     {
       label: 'Highest Utilization',
@@ -254,9 +235,9 @@ export default function CompareSpaces() {
       valueColor: topPerf ? colors.primary : colors.muted,
     },
     {
-      label: 'Peak Usage Time',
-      value: topPerf?.peak ?? '—',
-      sub: topPerf ? `Busiest time for ${topPerf.name}` : 'Select a location',
+      label: 'Peak Occupancy',
+      value: topPerf ? String(topPerf.peakOcc) : '—',
+      sub: topPerf ? `Highest count for ${topPerf.name}` : 'Select a location',
       valueColor: colors.heading,
     },
     {
@@ -354,7 +335,6 @@ export default function CompareSpaces() {
                   </select>
                 </div>
               </div>
-              {/* Active filter chips */}
               {(filters.timeFrame !== 'Semester' || filters.location !== 'All Locations') && (
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 12 }}>
                   {filters.timeFrame !== 'Semester' && (
@@ -420,7 +400,7 @@ export default function CompareSpaces() {
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
                     <tr style={{ borderBottom: `1.5px solid ${colors.border}` }}>
-                      {['Location', 'Avg Occupancy', 'Capacity', 'Utilization Rate', 'Peak Time'].map(h => (
+                      {['Location', 'Avg Occupancy', 'Capacity', 'Utilization Rate', 'Peak Occupancy'].map(h => (
                         <th key={h} style={{ fontSize: '11px', color: colors.muted, fontWeight: 700, padding: '8px 0', textAlign: 'left', letterSpacing: '0.05em' }}>
                           {h.toUpperCase()}
                         </th>
@@ -440,7 +420,7 @@ export default function CompareSpaces() {
                         <td style={{ padding: '12px 0', fontSize: '13px', color: colors.secondary }}>{r.avgOcc}</td>
                         <td style={{ padding: '12px 0', fontSize: '13px', color: colors.secondary }}>{r.cap}</td>
                         <td style={{ padding: '12px 0' }}><UtilBar val={r.util} /></td>
-                        <td style={{ padding: '12px 0', fontSize: '12px', color: colors.muted, fontWeight: 500 }}>{r.peak}</td>
+                        <td style={{ padding: '12px 0', fontSize: '13px', color: colors.secondary, fontWeight: 500 }}>{r.peakOcc}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -453,15 +433,19 @@ export default function CompareSpaces() {
               <div style={{ fontSize: '14px', fontWeight: 800, color: colors.body, marginBottom: 16 }}>
                 Average Occupancy by Day of Week
               </div>
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={weeklyBar} margin={{ top: 5, right: 10, left: -20, bottom: 0 }} barCategoryGap="25%">
-                  <CartesianGrid strokeDasharray="3 3" stroke={colors.chartGrid} vertical={false} />
-                  <XAxis dataKey="day" tick={{ fontSize: 11, fill: colors.muted }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: colors.muted }} axisLine={false} tickLine={false} />
-                  <Tooltip content={<ChartTooltip />} />
-                  <Bar dataKey="avg" name="Avg Occupancy" fill={colors.primary} radius={[3, 3, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
+              {weeklyBar.every(d => d.avg === 0) ? (
+                <EmptyChart height={200} message="No weekly data available for the selected filters" />
+              ) : (
+                <ResponsiveContainer width="100%" height={200}>
+                  <BarChart data={weeklyBar} margin={{ top: 5, right: 10, left: -20, bottom: 0 }} barCategoryGap="25%">
+                    <CartesianGrid strokeDasharray="3 3" stroke={colors.chartGrid} vertical={false} />
+                    <XAxis dataKey="day" tick={{ fontSize: 11, fill: colors.muted }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fontSize: 11, fill: colors.muted }} axisLine={false} tickLine={false} />
+                    <Tooltip content={<ChartTooltip />} />
+                    <Bar dataKey="avg" name="Avg Occupancy" fill={colors.primary} radius={[3, 3, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
             </div>
 
             {/* Bottom Stats */}

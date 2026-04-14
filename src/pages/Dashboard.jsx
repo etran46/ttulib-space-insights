@@ -3,7 +3,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { Users, TrendingUp, CheckCircle, AlertTriangle, MapPin, Loader } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext.jsx';
 import ChartTooltip from '../components/ChartTooltip.jsx';
-import { fetchLocations, fetchLocationNow, fetchHourlyOccupancy, today } from '../api/occuspace.js';
+import { fetchLocations, fetchLocationNow, fetchHourlyOccupancy, today, daysAgo, cleanName } from '../api/occuspace.js';
 import './Dashboard.css';
 
 function StatusBadge({ status }) {
@@ -76,9 +76,9 @@ export default function Dashboard() {
         const allLocations = await fetchLocations();
 
         // Find the root location (no parent) — typically the building itself
-        const root = allLocations.find(l => l.parentID == null) || allLocations[0];
+        const root = allLocations.find(l => l.parentId == null) || allLocations[0];
         // Child locations are the individual spaces
-        const children = allLocations.filter(l => l.parentID === root?.id);
+        const children = allLocations.filter(l => l.parentId === root?.id);
         const locationsToShow = children.length > 0 ? children : allLocations;
 
         // Fetch real-time data for each location
@@ -91,7 +91,7 @@ export default function Dashboard() {
             const d = result.value;
             const pct = d.percentage ?? Math.round((d.count / loc.capacity) * 100);
             return {
-              name: loc.name,
+              name: cleanName(loc.name),
               current: d.count,
               capacity: loc.capacity,
               status: getStatus(pct),
@@ -99,7 +99,7 @@ export default function Dashboard() {
             };
           }
           return {
-            name: loc.name,
+            name: cleanName(loc.name),
             current: 0,
             capacity: loc.capacity,
             status: 'Available',
@@ -110,11 +110,14 @@ export default function Dashboard() {
         if (cancelled) return;
         setLocations(locs);
 
-        // Fetch hourly occupancy for the root/building for today's trend chart
+        // Fetch hourly occupancy for the root/building — try today, fall back to yesterday
         const rootId = root?.id || locationsToShow[0]?.id;
         if (rootId) {
           try {
-            const hourly = await fetchHourlyOccupancy(rootId, today(), today());
+            let hourly = await fetchHourlyOccupancy(rootId, today(), today());
+            if (!hourly || hourly.length === 0) {
+              hourly = await fetchHourlyOccupancy(rootId, daysAgo(1), daysAgo(1));
+            }
             const chartData = (hourly || []).map(h => ({
               time: h.normalizedTime
                 ? new Date(`1970-01-01T${h.normalizedTime}`).toLocaleTimeString('en-US', { hour: 'numeric', minute: undefined, hour12: true })
