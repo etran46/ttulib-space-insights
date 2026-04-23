@@ -1,41 +1,21 @@
 import { useState, useEffect } from 'react';
-import { Flag, BarChart2, Search, DollarSign, MapPin } from 'lucide-react';
+import { Flag, BarChart2, Search, DollarSign, MapPin, Loader, AlertTriangle } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext.jsx';
+import { fetchLocations, fetchDailyOccupancy, daysAgo, today, cleanName } from '../api/occuspace.js';
 import './Underutilized.css';
 
-const underutilized = [
-  {
-    name: 'Basement Southside', location: 'Main University Library', pct: 5,
-    capacity: 395, avgOcc: 5, wasted: 95, trend: 'declining',
-    savings: '$12,000/year in operational cost', weekly: [4, 3, 5, 4, 2, 3, 4],
-  },
-  {
-    name: 'Stacks 5', location: 'Main University Library West Wing', pct: 7,
-    capacity: 311, avgOcc: 7, wasted: 93, trend: 'stable',
-    savings: '$18,500/year in operational costs', weekly: [10, 8, 11, 9, 7, 8, 9],
-  },
-  {
-    name: 'Room 132', location: 'Main University – Library First Floor', pct: 12,
-    capacity: 40, avgOcc: 12, wasted: 88, trend: 'declining',
-    savings: '$8,000/year in operational costs', weekly: [7, 5, 6, 5, 4, 5, 4],
-  },
-  {
-    name: 'Public Spaces', location: '4th Floor', pct: 12,
-    capacity: 109, avgOcc: 12, wasted: 88, trend: 'stable',
-    savings: '$15,000/year in operational cost', weekly: [13, 10, 14, 12, 11, 12, 10],
-  },
-];
-
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const UTILIZATION_THRESHOLD = 20; // percent
+const WEEKS_TO_ANALYZE = 8;
 
 function MiniBar({ vals, spaceLabel }) {
   const { colors } = useTheme();
-  const max = Math.max(...vals);
+  const max = Math.max(...vals, 1);
   return (
     <div role="img" aria-label={`Weekly usage pattern for ${spaceLabel}`}>
       <div style={{ display: 'flex', gap: 4, alignItems: 'flex-end', height: 36 }}>
         {vals.map((v, i) => (
-          <div key={i} title={`${DAYS[i]}: ${v}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <div key={i} title={`${DAYS[i]}: ${v}%`} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <div style={{
               width: '100%',
               height: `${(v / max) * 28}px`,
@@ -53,24 +33,125 @@ function MiniBar({ vals, spaceLabel }) {
       </div>
       <div style={{ display: 'flex', gap: 4 }}>
         {vals.map((v, i) => (
-          <div key={i} style={{ flex: 1, textAlign: 'center', fontSize: '12px', color: colors.muted }}>{v}</div>
+          <div key={i} style={{ flex: 1, textAlign: 'center', fontSize: '12px', color: colors.muted }}>{v}%</div>
         ))}
       </div>
     </div>
   );
 }
 
-const statDefs = [
-  { label: 'Flagged Spaces',         value: '4',   sub: 'Below threshold',           Icon: Flag,      accentKey: 'statusAmber' },
-  { label: 'Total Wasted Capacity',  value: '795', sub: 'seats/spots available',      Icon: BarChart2, accentKey: 'accent' },
-  { label: 'Analysis Period',        value: '8',   sub: 'weeks analyzed',             Icon: Search,    accentKey: 'statusGreen' },
-  { label: 'Potential Savings',      value: '$54K',sub: 'per year',                   Icon: DollarSign,accentKey: 'statusGreen', subKey: 'positiveText' },
-];
-
 export default function Underutilized() {
   const { colors } = useTheme();
   const [animIn, setAnimIn] = useState(false);
+  const [spaces, setSpaces] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
   useEffect(() => { setTimeout(() => setAnimIn(true), 80); }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      try {
+        setLoading(true);
+        setError(null);
+
+        const allLocations = await fetchLocations();
+        const root = allLocations.find(l => l.parentId == null) || allLocations[0];
+        const children = allLocations.filter(l => l.parentId === root?.id);
+        const locationsToQuery = children.length > 0 ? children : allLocations;
+
+        const start = daysAgo(WEEKS_TO_ANALYZE * 7);
+        const end = today();
+
+        // Fetch daily occupancy for each location over the analysis period
+        const dailyPromises = locationsToQuery.map(loc =>
+          fetchDailyOccupancy(loc.id, start, end)
+        );
+        const dailyResults = await Promise.allSettled(dailyPromises);
+
+        const analyzed = locationsToQuery.map((loc, i) => {
+          const result = dailyResults[i];
+          if (result.status !== 'fulfilled' || !result.value?.length) return null;
+
+          const days = result.value;
+          // Use avgPercentageOccupied from API if available, otherwise compute from count
+          // avgPercentageOccupied is a decimal fraction (0.13 = 13%), so multiply by 100
+          const hasApiPct = days[0]?.avgPercentageOccupied != null;
+          const pct = hasApiPct
+            ? Math.round(days.reduce((s, d) => s + (d.avgPercentageOccupied || 0), 0) / days.length * 100)
+            : loc.capacity > 0
+              ? Math.round(days.reduce((s, d) => s + (d.avgOccupancy || 0), 0) / days.length / loc.capacity * 100)
+              : 0;
+
+          if (pct >= UTILIZATION_THRESHOLD) return null; // not underutilized
+
+          // Compute weekly pattern (average by day-of-week)
+          const byDow = [0, 0, 0, 0, 0, 0, 0];
+          const countDow = [0, 0, 0, 0, 0, 0, 0];
+          days.forEach(d => {
+            const date = new Date(d.normalizedDate || d.timestamp);
+            const dow = (date.getDay() + 6) % 7; // Mon=0 ... Sun=6
+            byDow[dow] += d.avgOccupancy;
+            countDow[dow]++;
+          });
+          const weekly = byDow.map((total, i) =>
+            countDow[i] > 0 && loc.capacity > 0
+              ? Math.round((total / countDow[i] / loc.capacity) * 100)
+              : 0
+          );
+
+          // Simple trend: compare first half to second half
+          const mid = Math.floor(days.length / 2);
+          const firstHalf = days.slice(0, mid);
+          const secondHalf = days.slice(mid);
+          const avgFirst = firstHalf.reduce((s, d) => s + d.avgOccupancy, 0) / (firstHalf.length || 1);
+          const avgSecond = secondHalf.reduce((s, d) => s + d.avgOccupancy, 0) / (secondHalf.length || 1);
+          const trend = avgSecond < avgFirst * 0.95 ? 'declining' : 'stable';
+
+          const wasted = 100 - pct;
+
+          return {
+            name: cleanName(loc.name),
+            capacity: loc.capacity,
+            pct,
+            avgOcc: pct,
+            wasted,
+            trend,
+            weekly,
+          };
+        }).filter(Boolean);
+
+        // Sort by lowest utilization
+        analyzed.sort((a, b) => a.pct - b.pct);
+
+        if (!cancelled) {
+          setSpaces(analyzed);
+          setLoading(false);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err.message);
+          setLoading(false);
+        }
+      }
+    }
+
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Derived stats
+  const flaggedCount = spaces.length;
+  const totalWasted = spaces.reduce((s, sp) => s + Math.round(sp.capacity * (sp.wasted / 100)), 0);
+
+  const statDefs = [
+    { label: 'Flagged Spaces',         value: String(flaggedCount), sub: 'Below threshold',           Icon: Flag,      accentKey: 'statusAmber' },
+    { label: 'Total Wasted Capacity',  value: String(totalWasted),  sub: 'seats/spots available',     Icon: BarChart2, accentKey: 'accent' },
+    { label: 'Analysis Period',        value: String(WEEKS_TO_ANALYZE), sub: 'weeks analyzed',        Icon: Search,    accentKey: 'statusGreen' },
+    { label: 'Avg Utilization',        value: spaces.length > 0 ? `${Math.round(spaces.reduce((s, sp) => s + sp.pct, 0) / spaces.length)}%` : '—', sub: 'across flagged spaces', Icon: DollarSign, accentKey: 'statusGreen', subKey: 'positiveText' },
+  ];
 
   return (
     <div
@@ -89,104 +170,114 @@ export default function Underutilized() {
             Underutilized Space Identifier
           </h1>
           <p style={{ color: colors.muted, fontSize: '13px', margin: '4px 0 0', fontWeight: 500 }}>
-            Spaces below 20% utilization threshold – opportunities for optimization
+            Spaces below {UTILIZATION_THRESHOLD}% utilization threshold – opportunities for optimization
           </p>
         </div>
 
-        {/* Top Stats */}
-        <div className="stat-grid" role="region" aria-label="Summary statistics">
-          {statDefs.map(({ label, value, sub, Icon, accentKey, subKey }) => (
-            <div key={label} className="card" style={{
-              padding: '18px 20px',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'flex-start',
-              background: colors.surface,
-              border: `1px solid ${colors.border}`,
-            }}>
-              <div>
-                <div style={{ fontSize: '11px', color: colors.muted, fontWeight: 600, marginBottom: 4 }}>{label}</div>
-                <div style={{ fontSize: '26px', fontWeight: 900, color: subKey ? colors[subKey] : colors.heading }}>{value}</div>
-                <div style={{ fontSize: '11px', color: colors.muted, marginTop: 2 }}>{sub}</div>
-              </div>
-              <div style={{
-                width: 36, height: 36,
-                background: colors[`${accentKey}Bg`] || colors.bgSubtle,
-                borderRadius: '8px',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>
-                <Icon size={16} color={colors[accentKey] || colors.primary} aria-hidden="true" />
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Space Cards */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }} role="region" aria-label="Underutilized spaces">
-          {underutilized.map(sp => (
-            <div key={sp.name} className="card" style={{
-              padding: '20px 22px',
-              background: colors.surface,
-              border: `1px solid ${colors.border}`,
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <MapPin size={15} color={colors.muted} aria-hidden="true" />
-                    <span style={{ fontWeight: 800, fontSize: '16px', color: colors.heading }}>{sp.name}</span>
-                  </div>
-                  <div style={{ fontSize: '12px', color: colors.muted, marginLeft: 23, marginTop: 2 }}>{sp.location}</div>
-                </div>
-                <span style={{
-                  background: colors.statusAmberBg,
-                  color: colors.statusAmberText,
-                  fontSize: '11px',
-                  fontWeight: 700,
-                  padding: '3px 10px',
-                  borderRadius: '20px',
+        {loading ? (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '80px 0', color: colors.muted }}>
+            <Loader size={20} style={{ animation: 'spin 1s linear infinite' }} />
+            <span style={{ fontSize: '14px', fontWeight: 600 }}>Analyzing space utilization...</span>
+            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+          </div>
+        ) : error ? (
+          <div style={{ padding: '40px 20px', textAlign: 'center', color: colors.statusRedText, background: colors.statusRedBg, borderRadius: '12px' }}>
+            <AlertTriangle size={24} style={{ marginBottom: 8 }} />
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>Failed to load data</div>
+            <div style={{ fontSize: '13px', color: colors.muted }}>{error}</div>
+          </div>
+        ) : (
+          <>
+            {/* Top Stats */}
+            <div className="stat-grid" role="region" aria-label="Summary statistics">
+              {statDefs.map(({ label, value, sub, Icon, accentKey, subKey }) => (
+                <div key={label} className="card" style={{
+                  padding: '18px 20px',
                   display: 'flex',
-                  alignItems: 'center',
-                  gap: 4,
+                  justifyContent: 'space-between',
+                  alignItems: 'flex-start',
+                  background: colors.surface,
+                  border: `1px solid ${colors.border}`,
                 }}>
-                  <Flag size={11} aria-hidden="true" /> {sp.pct}% Utilized
-                </span>
-              </div>
+                  <div>
+                    <div style={{ fontSize: '11px', color: colors.muted, fontWeight: 600, marginBottom: 4 }}>{label}</div>
+                    <div style={{ fontSize: '26px', fontWeight: 900, color: subKey ? colors[subKey] : colors.heading }}>{value}</div>
+                    <div style={{ fontSize: '11px', color: colors.muted, marginTop: 2 }}>{sub}</div>
+                  </div>
+                  <div style={{
+                    width: 36, height: 36,
+                    background: colors[`${accentKey}Bg`] || colors.bgSubtle,
+                    borderRadius: '8px',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <Icon size={16} color={colors[accentKey] || colors.primary} aria-hidden="true" />
+                  </div>
+                </div>
+              ))}
+            </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-                {[
-                  { label: 'Capacity',         value: sp.capacity,                                  color: null },
-                  { label: 'Avg Occupancy',    value: `${sp.avgOcc}%`,                              color: colors.statusRed },
-                  { label: 'Wasted Capacity',  value: `${sp.wasted}%`,                              color: colors.statusRed },
-                  { label: 'Trend',            value: sp.trend === 'declining' ? '↓ Declining' : '→ Stable', color: sp.trend === 'declining' ? colors.statusRed : colors.statusAmber },
-                ].map(m => (
-                  <div key={m.label}>
-                    <div style={{ fontSize: '11px', color: colors.muted, fontWeight: 600, marginBottom: 3 }}>{m.label}</div>
-                    <div style={{ fontSize: '15px', fontWeight: 800, color: m.color || colors.heading }}>{m.value}</div>
+            {/* Space Cards */}
+            {spaces.length === 0 ? (
+              <div style={{ padding: '40px 20px', textAlign: 'center', color: colors.muted, background: colors.bgSubtle, borderRadius: '12px' }}>
+                <div style={{ fontSize: '15px', fontWeight: 700, marginBottom: 4 }}>No underutilized spaces found</div>
+                <div style={{ fontSize: '13px' }}>All spaces are above the {UTILIZATION_THRESHOLD}% utilization threshold</div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }} role="region" aria-label="Underutilized spaces">
+                {spaces.map(sp => (
+                  <div key={sp.name} className="card" style={{
+                    padding: '20px 22px',
+                    background: colors.surface,
+                    border: `1px solid ${colors.border}`,
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <MapPin size={15} color={colors.muted} aria-hidden="true" />
+                          <span style={{ fontWeight: 800, fontSize: '16px', color: colors.heading }}>{sp.name}</span>
+                        </div>
+                      </div>
+                      <span style={{
+                        background: colors.statusAmberBg,
+                        color: colors.statusAmberText,
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        padding: '3px 10px',
+                        borderRadius: '20px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                      }}>
+                        <Flag size={11} aria-hidden="true" /> {sp.pct}% Utilized
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
+                      {[
+                        { label: 'Capacity',         value: sp.capacity,                                  color: null },
+                        { label: 'Avg Occupancy',    value: `${sp.avgOcc}%`,                              color: colors.statusRed },
+                        { label: 'Wasted Capacity',  value: `${sp.wasted}%`,                              color: colors.statusRed },
+                        { label: 'Trend',            value: sp.trend === 'declining' ? '↓ Declining' : '→ Stable', color: sp.trend === 'declining' ? colors.statusRed : colors.statusAmber },
+                      ].map(m => (
+                        <div key={m.label}>
+                          <div style={{ fontSize: '11px', color: colors.muted, fontWeight: 600, marginBottom: 3 }}>{m.label}</div>
+                          <div style={{ fontSize: '15px', fontWeight: 800, color: m.color || colors.heading }}>{m.value}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{ marginBottom: 12 }}>
+                      <div style={{ fontSize: '12px', color: colors.secondary, fontWeight: 600, marginBottom: 8 }}>
+                        Weekly Usage Pattern (avg % of capacity)
+                      </div>
+                      <MiniBar vals={sp.weekly} spaceLabel={sp.name} />
+                    </div>
                   </div>
                 ))}
               </div>
-
-              <div style={{ marginBottom: 12 }}>
-                <div style={{ fontSize: '12px', color: colors.secondary, fontWeight: 600, marginBottom: 8 }}>
-                  Weekly Usage Pattern
-                </div>
-                <MiniBar vals={sp.weekly} spaceLabel={sp.name} />
-              </div>
-
-              <div style={{
-                fontSize: '13px',
-                fontWeight: 700,
-                color: colors.positiveText,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 5,
-              }}>
-                <DollarSign size={14} aria-hidden="true" />
-                Potential Savings: {sp.savings}
-              </div>
-            </div>
-          ))}
-        </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
