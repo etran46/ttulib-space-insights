@@ -89,7 +89,9 @@ export default function Dashboard() {
           const result = nowResults[i];
           if (result.status === 'fulfilled') {
             const d = result.value;
-            const pct = d.percentage ?? Math.round((d.count / loc.capacity) * 100);
+            const pct = d.percentage != null
+              ? Math.round(d.percentage * 100)
+              : Math.round((d.count / loc.capacity) * 100);
             return {
               name: cleanName(loc.name),
               current: d.count,
