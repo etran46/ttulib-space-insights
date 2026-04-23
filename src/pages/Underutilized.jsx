@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Flag, BarChart2, Search, DollarSign, MapPin, Loader, AlertTriangle } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext.jsx';
-import { fetchLocations, fetchDailyOccupancy, daysAgo, today, cleanName } from '../api/occuspace.js';
+import { fetchLocations, fetchDailyOccupancy, daysAgo, today, cleanName, parseLocalDate } from '../api/occuspace.js';
 import './Underutilized.css';
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -91,8 +91,11 @@ export default function Underutilized() {
           const byDow = [0, 0, 0, 0, 0, 0, 0];
           const countDow = [0, 0, 0, 0, 0, 0, 0];
           days.forEach(d => {
-            const date = new Date(d.normalizedDate || d.timestamp);
-            const dow = (date.getDay() + 6) % 7; // Mon=0 ... Sun=6
+            const localDate = d.normalizedDate
+              ? parseLocalDate(d.normalizedDate)
+              : new Date(d.timestamp);
+            if (!localDate) return;
+            const dow = (localDate.getDay() + 6) % 7; // Mon=0 ... Sun=6
             byDow[dow] += d.avgOccupancy;
             countDow[dow]++;
           });

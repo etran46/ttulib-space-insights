@@ -6,7 +6,7 @@ import {
 import { Download, Loader, AlertTriangle } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext.jsx';
 import ChartTooltip from '../components/ChartTooltip.jsx';
-import { fetchLocations, fetchDailyOccupancy, daysAgo, today, cleanName } from '../api/occuspace.js';
+import { fetchLocations, fetchDailyOccupancy, daysAgo, today, cleanName, parseLocalDate } from '../api/occuspace.js';
 import './CompareSpaces.css';
 
 // ── Sub-components ──────────────────────────────────────────────────────────
@@ -152,7 +152,9 @@ export default function CompareSpaces() {
       data.forEach(d => {
         const date = d.normalizedDate || d.timestamp?.slice(0, 10);
         if (!date || date < cutoffDate) return;
-        const monthKey = new Date(date).toLocaleDateString('en-US', { month: 'short' });
+        const localDate = parseLocalDate(date);
+        const monthKey = localDate?.toLocaleDateString('en-US', { month: 'short' });
+        if (!monthKey) return;
         if (!months[monthKey]) months[monthKey] = {};
         if (!months[monthKey][loc.displayName]) months[monthKey][loc.displayName] = [];
         months[monthKey][loc.displayName].push(d.avgOccupancy || 0);
@@ -181,7 +183,9 @@ export default function CompareSpaces() {
       data.forEach(d => {
         const date = d.normalizedDate || d.timestamp?.slice(0, 10);
         if (!date || date < cutoffDate) return;
-        const dow = (new Date(date).getDay() + 6) % 7;
+        const localDate = parseLocalDate(date);
+        if (!localDate) return;
+        const dow = (localDate.getDay() + 6) % 7;
         byDow[dow].total += d.avgOccupancy || 0;
         byDow[dow].count++;
       });

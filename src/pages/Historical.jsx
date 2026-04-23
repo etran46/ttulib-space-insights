@@ -6,7 +6,7 @@ import {
 import { Calendar, TrendingUp, Award, Database, Loader, AlertTriangle } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext.jsx';
 import ChartTooltip from '../components/ChartTooltip.jsx';
-import { fetchLocations, fetchDailyOccupancy } from '../api/occuspace.js';
+import { fetchLocations, fetchDailyOccupancy, parseLocalDate } from '../api/occuspace.js';
 import './Historical.css';
 
 // Semester definitions — update these each academic year
@@ -82,8 +82,11 @@ export default function Historical() {
 
         const chartDays = (days || []).map(d => {
           const date = d.normalizedDate || d.timestamp?.slice(0, 10);
+          const localDate = parseLocalDate(date);
           return {
-            date: new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+            date: localDate
+              ? localDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+              : date,
             occ: d.avgOccupancy,
             peak: d.peakOccupancy,
             rawDate: date,
@@ -146,12 +149,15 @@ export default function Historical() {
   const multiYear = useMemo(() => {
     const years = {};
     Object.entries(semesterData).forEach(([key, data]) => {
-      const year = SEMESTER_DEFS[key].start.slice(0, 4);
-      if (!years[year]) years[year] = [];
-      data.days.forEach(d => {
-        years[year].push({ month: new Date(d.rawDate).getMonth(), occ: d.occ });
+        const year = SEMESTER_DEFS[key].start.slice(0, 4);
+        if (!years[year]) years[year] = [];
+        data.days.forEach(d => {
+          const localDate = parseLocalDate(d.rawDate);
+          if (localDate) {
+            years[year].push({ month: localDate.getMonth(), occ: d.occ });
+          }
+        });
       });
-    });
 
     // Build month-by-month comparison
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

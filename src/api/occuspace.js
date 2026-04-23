@@ -35,10 +35,17 @@ function ensureArray(data) {
   return [];
 }
 
+function normalizeLocation(location) {
+  return {
+    ...location,
+    parentId: location?.parentId ?? location?.parentID ?? null,
+  };
+}
+
 // GET /locations — list all locations
 export async function fetchLocations() {
   const data = await apiFetch('/locations');
-  return ensureArray(data);
+  return ensureArray(data).map(normalizeLocation);
 }
 
 // GET /locations/:id/now — real-time occupancy (returns object, not array)
@@ -78,7 +85,10 @@ export async function fetchDailyDwellTime(id, start, end) {
 
 // Helper: format Date to YYYY-MM-DD
 export function fmtDate(d) {
-  return d.toISOString().slice(0, 10);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 // Helper: get today's date string
@@ -91,6 +101,14 @@ export function daysAgo(n) {
   const d = new Date();
   d.setDate(d.getDate() - n);
   return fmtDate(d);
+}
+
+// Helper: parse a YYYY-MM-DD string as a local date instead of UTC
+export function parseLocalDate(dateStr) {
+  if (!dateStr) return null;
+  const [year, month, day] = dateStr.split('-').map(Number);
+  if (!year || !month || !day) return null;
+  return new Date(year, month - 1, day);
 }
 
 // Helper: strip numeric prefixes from location names (e.g. "01_Main Floor" → "Main Floor")
