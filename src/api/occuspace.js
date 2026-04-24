@@ -1,18 +1,14 @@
-const BASE_URL = 'https://api.occuspace.io/v1';
-
-function getToken() {
-  return import.meta.env.VITE_OCCUSPACE_API_TOKEN || '';
-}
+// All requests go through the Netlify function — the real API token
+// never leaves the server and is never included in the JS bundle.
+const PROXY = '/.netlify/functions/occuspace';
 
 async function apiFetch(path, params = {}) {
-  const url = new URL(`${BASE_URL}${path}`);
+  const searchParams = new URLSearchParams({ path });
   Object.entries(params).forEach(([k, v]) => {
-    if (v != null) url.searchParams.set(k, v);
+    if (v != null) searchParams.set(k, String(v));
   });
 
-  const res = await fetch(url.toString(), {
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
+  const res = await fetch(`${PROXY}?${searchParams}`);
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');
